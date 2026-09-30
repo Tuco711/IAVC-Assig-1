@@ -1,0 +1,9 @@
+Keypoints imagem 1: 1061
+Keypoints imagem 2: 1243
+Matches iniciais: 1061
+Good matches: 488
+Inliers: 451
+Outliers: 37
+Inlier ratio: 92.42%
+Lowe ratio: 0.8
+RANSAC threshold: 3.0
