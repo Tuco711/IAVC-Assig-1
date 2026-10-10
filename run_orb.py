@@ -25,7 +25,7 @@ from pipeline import (
 # CONFIGURAÇÃO
 # ============================================================
 
-project_folder = Path(__file__).resolve().parent.parent
+project_folder = Path(__file__).resolve().parent
 
 data_folder = project_folder / "data" / "graf"
 results_folder = project_folder / "results" / "orb"
