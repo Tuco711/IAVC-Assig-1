@@ -1223,7 +1223,65 @@ def evaluate_matches_ground_truth(
 
 
 # ============================================================
-# 16. CORRER UMA EXPERIÊNCIA COMPLETA (deteção -> matching ->
+# 16. REPEATABILITY
+#
+# Projeta kp1 para o referencial de img2 via H_gt e conta a
+# fração desses pontos (os que caem dentro de img2) que têm
+# um keypoint de kp2 a <= threshold pixels de distância.
+# ============================================================
+
+def compute_repeatability(
+    kp1,
+    kp2,
+    H_gt,
+    img2_shape,
+    threshold=3.0
+):
+
+    if len(kp1) == 0 or len(kp2) == 0:
+        return 0.0, 0
+
+    pts1 = np.float32(
+        [kp.pt for kp in kp1]
+    ).reshape(-1, 1, 2)
+
+    projected = cv2.perspectiveTransform(
+        pts1,
+        H_gt
+    ).reshape(-1, 2)
+
+    height2, width2 = img2_shape[:2]
+
+    inside_img2 = (
+        (projected[:, 0] >= 0)
+        & (projected[:, 0] < width2)
+        & (projected[:, 1] >= 0)
+        & (projected[:, 1] < height2)
+    )
+
+    projected_inside = projected[inside_img2]
+
+    if len(projected_inside) == 0:
+        return 0.0, 0
+
+    pts2 = np.float32([kp.pt for kp in kp2])
+
+    # Distância de cada ponto projetado ao keypoint mais
+    # próximo em img2 (broadcasting: N_inside x N_kp2)
+    diffs = projected_inside[:, None, :] - pts2[None, :, :]
+    dists = np.linalg.norm(diffs, axis=2)
+    min_dists = dists.min(axis=1)
+
+    num_repeated = int((min_dists <= threshold).sum())
+    num_projected_inside = len(projected_inside)
+
+    repeatability = num_repeated / num_projected_inside
+
+    return repeatability, num_projected_inside
+
+
+# ============================================================
+# 17. CORRER UMA EXPERIÊNCIA COMPLETA (deteção -> matching ->
 #     RANSAC -> warp -> panorama -> métricas), parametrizada
 #     por detetor/descritor/matcher.
 # ============================================================
@@ -1368,6 +1426,18 @@ def run_experiment(
 
     H_gt = load_ground_truth_homography(ground_truth_path)
 
+    repeatability, repeatability_projected = compute_repeatability(
+        kp1,
+        kp2,
+        H_gt,
+        img2.shape,
+        gt_threshold
+    )
+
+    print("\n--- REPEATABILITY ---")
+    print("Repeatability:", round(repeatability * 100, 2), "%")
+    print("Pontos projetados dentro de img2:", repeatability_projected)
+
     evaluation_matches = make_matches_one_to_one(good_matches)
 
     gt_results = evaluate_matches_ground_truth(
@@ -1504,6 +1574,8 @@ def run_experiment(
 
         file.write("\n--- Ground Truth Evaluation ---\n")
         file.write(f"Ground truth threshold: {gt_threshold} pixels\n")
+        file.write(f"Repeatability: {repeatability * 100:.2f}%\n")
+        file.write(f"Repeatability projected points: {repeatability_projected}\n")
         file.write(f"Putative matches one-to-one: {gt_results['putative_matches']}\n")
         file.write(f"Correct matches: {gt_results['correct_matches']}\n")
         file.write(f"Possible correspondences: {gt_results['possible_correspondences']}\n")
@@ -1544,6 +1616,8 @@ def run_experiment(
         "matching_time_ms": matching_time * 1000,
         "descriptor_dimension": descriptor_dimension,
         "descriptor_memory_kb": descriptor_memory,
+        "repeatability": repeatability,
+        "repeatability_projected_points": repeatability_projected,
         **gt_results,
     }
 
@@ -1565,6 +1639,8 @@ COMPARISON_FIELDS = [
     "outliers",
     "inlier_ratio",
     "average_reprojection_error",
+    "repeatability",
+    "repeatability_projected_points",
     "putative_matches",
     "correct_matches",
     "pmr",
@@ -1614,3 +1690,474 @@ def summarize_results(
             writer.writerow(row)
 
     print("\nTabela-resumo guardada em:", csv_path)
+
+
+# ============================================================
+# 18. VARRIMENTO DE PARÂMETROS DO FAST (threshold x NMS),
+#     comparado com SIFT — secção 2.3 do enunciado.
+# ============================================================
+
+def run_fast_threshold_sweep(
+    img1_path,
+    img2_path,
+    ground_truth_path,
+    csv_path,
+    thresholds=(10, 20, 30, 40),
+    nms_options=(True, False),
+    gt_threshold=3.0,
+):
+
+    img1 = load_image(img1_path)
+    img2 = load_image(img2_path)
+
+    gray1 = to_gray(img1)
+    gray2 = to_gray(img2)
+
+    H_gt = load_ground_truth_homography(ground_truth_path)
+
+    rows = []
+
+    # --------------------------------------------------------
+    # Baseline: SIFT
+    # --------------------------------------------------------
+
+    start_time = time.perf_counter()
+    kp1, _ = detect_sift(gray1)
+    kp2, _ = detect_sift(gray2)
+    detection_time = time.perf_counter() - start_time
+
+    repeatability, _ = compute_repeatability(
+        kp1, kp2, H_gt, img2.shape, gt_threshold
+    )
+
+    rows.append({
+        "config": "sift (baseline)",
+        "threshold": "",
+        "nonmax_suppression": "",
+        "keypoints_img1": len(kp1),
+        "keypoints_img2": len(kp2),
+        "repeatability": round(repeatability, 4),
+        "detection_time_ms": round(detection_time * 1000, 4),
+    })
+
+    # --------------------------------------------------------
+    # FAST: threshold x nonmaxSuppression
+    # --------------------------------------------------------
+
+    for threshold in thresholds:
+
+        for nms in nms_options:
+
+            fast = cv2.FastFeatureDetector_create(
+                threshold=threshold,
+                nonmaxSuppression=nms
+            )
+
+            start_time = time.perf_counter()
+            kp1 = fast.detect(gray1, None)
+            kp2 = fast.detect(gray2, None)
+            detection_time = time.perf_counter() - start_time
+
+            repeatability, _ = compute_repeatability(
+                kp1, kp2, H_gt, img2.shape, gt_threshold
+            )
+
+            rows.append({
+                "config": f"fast_t{threshold}_nms{nms}",
+                "threshold": threshold,
+                "nonmax_suppression": nms,
+                "keypoints_img1": len(kp1),
+                "keypoints_img2": len(kp2),
+                "repeatability": round(repeatability, 4),
+                "detection_time_ms": round(detection_time * 1000, 4),
+            })
+
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fieldnames = [
+        "config", "threshold", "nonmax_suppression",
+        "keypoints_img1", "keypoints_img2",
+        "repeatability", "detection_time_ms",
+    ]
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as file:
+
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print("Varrimento do FAST guardado em:", csv_path)
+
+
+# ============================================================
+# 19. SUPERPOINT (detetor + descritor aprendidos)
+#
+# Checkpoint pré-treinado via Hugging Face transformers.
+# Encaixa no mesmo contrato detect_fn(gray) -> (kp, des) dos
+# detetores clássicos, por isso entra no grid EXPERIMENTS
+# normalmente (emparelhado com match_sift, já que os
+# descritores são floating-point 256-d).
+# ============================================================
+
+_SUPERPOINT_PROCESSOR = None
+_SUPERPOINT_MODEL = None
+
+
+def _get_superpoint():
+
+    global _SUPERPOINT_PROCESSOR, _SUPERPOINT_MODEL
+
+    if _SUPERPOINT_MODEL is None:
+
+        from transformers import AutoImageProcessor, SuperPointForKeypointDetection
+
+        _SUPERPOINT_PROCESSOR = AutoImageProcessor.from_pretrained(
+            "magic-leap-community/superpoint"
+        )
+
+        _SUPERPOINT_MODEL = SuperPointForKeypointDetection.from_pretrained(
+            "magic-leap-community/superpoint"
+        )
+
+        _SUPERPOINT_MODEL.eval()
+
+    return _SUPERPOINT_PROCESSOR, _SUPERPOINT_MODEL
+
+
+def detect_superpoint(image_gray):
+
+    import torch
+
+    processor, model = _get_superpoint()
+
+    image_rgb = cv2.cvtColor(image_gray, cv2.COLOR_GRAY2RGB)
+
+    inputs = processor(image_rgb, return_tensors="pt")
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    image_size = [(image_gray.shape[0], image_gray.shape[1])]
+
+    processed = processor.post_process_keypoint_detection(
+        outputs,
+        image_size
+    )[0]
+
+    coords = processed["keypoints"].numpy()
+    scores = processed["scores"].numpy()
+    descriptors = processed["descriptors"].numpy().astype(np.float32)
+
+    keypoints = [
+        cv2.KeyPoint(float(x), float(y), 8, -1, float(s))
+        for (x, y), s in zip(coords, scores)
+    ]
+
+    return keypoints, descriptors
+
+
+# ============================================================
+# 20. SUPERPOINT + LIGHTGLUE
+#
+# Configuração learned completa (deteção + matching) — secção
+# 2.6 do enunciado. O LightGlue deteta e empareilha num único
+# passo conjunto (não "detect_fn" + "match_fn" separados como
+# nos outros métodos), por isso tem a sua própria função de
+# experiência em vez de passar por run_experiment(). Reutiliza
+# as mesmas funções de baixo nível (RANSAC, avaliação ground
+# truth, repeatability, warp, panorama) para que os resultados
+# fiquem no mesmo formato dos outros métodos.
+# ============================================================
+
+_LIGHTGLUE_PROCESSOR = None
+_LIGHTGLUE_MODEL = None
+
+
+def _get_lightglue():
+
+    global _LIGHTGLUE_PROCESSOR, _LIGHTGLUE_MODEL
+
+    if _LIGHTGLUE_MODEL is None:
+
+        from transformers import AutoImageProcessor, AutoModel
+
+        _LIGHTGLUE_PROCESSOR = AutoImageProcessor.from_pretrained(
+            "ETH-CVG/lightglue_superpoint"
+        )
+
+        _LIGHTGLUE_MODEL = AutoModel.from_pretrained(
+            "ETH-CVG/lightglue_superpoint"
+        )
+
+        _LIGHTGLUE_MODEL.eval()
+
+    return _LIGHTGLUE_PROCESSOR, _LIGHTGLUE_MODEL
+
+
+def run_superpoint_lightglue_experiment(
+    img1_path,
+    img2_path,
+    ground_truth_path,
+    results_folder,
+    ransac_threshold=3.0,
+    gt_threshold=3.0,
+    match_threshold=0.2,
+    show=False,
+):
+
+    import torch
+    from PIL import Image
+
+    name = "superpoint_lightglue"
+    label = name.upper()
+
+    results_folder = Path(results_folder)
+
+    results_folder.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    img1 = load_image(img1_path)
+    img2 = load_image(img2_path)
+
+    print("Imagens carregadas com sucesso!")
+
+    pil1 = Image.fromarray(cv2.cvtColor(img1, cv2.COLOR_BGR2RGB))
+    pil2 = Image.fromarray(cv2.cvtColor(img2, cv2.COLOR_BGR2RGB))
+
+    processor, model = _get_lightglue()
+
+    start_time = time.perf_counter()
+
+    inputs = processor([pil1, pil2], return_tensors="pt")
+
+    with torch.inference_mode():
+        outputs = model(**inputs)
+
+    image_sizes = [[(pil1.height, pil1.width), (pil2.height, pil2.width)]]
+
+    processed = processor.post_process_keypoint_matching(
+        outputs,
+        image_sizes,
+        threshold=match_threshold
+    )[0]
+
+    detection_and_matching_time = time.perf_counter() - start_time
+
+    keypoints0 = processed["keypoints0"].numpy()
+    keypoints1 = processed["keypoints1"].numpy()
+    scores = processed["matching_scores"].numpy()
+
+    kp1 = [cv2.KeyPoint(float(x), float(y), 8) for x, y in keypoints0]
+    kp2 = [cv2.KeyPoint(float(x), float(y), 8) for x, y in keypoints1]
+
+    good_matches = [
+        cv2.DMatch(i, i, float(1.0 - s))
+        for i, s in enumerate(scores)
+    ]
+
+    matches = good_matches
+
+    descriptor_dimension = 256
+
+    descriptor_memory = (
+        (len(kp1) + len(kp2)) * descriptor_dimension * 4
+    ) / 1024
+
+    print(f"\n--- {label} ---")
+
+    print("Keypoints/matches imagem 1:", len(kp1))
+    print("Keypoints/matches imagem 2:", len(kp2))
+
+    print(
+        "Tempo deteção+matching (conjunto, LightGlue):",
+        round(detection_and_matching_time * 1000, 2),
+        "ms"
+    )
+
+    if len(good_matches) < 4:
+        print(
+            "ERRO: não existem matches suficientes "
+            "para calcular a homografia."
+        )
+        return None
+
+    keypoints_img1 = draw_keypoints(img1, kp1)
+    keypoints_img2 = draw_keypoints(img2, kp2)
+
+    save_image(keypoints_img1, results_folder / "01_keypoints_img1.jpg")
+    save_image(keypoints_img2, results_folder / "02_keypoints_img2.jpg")
+
+    good_matches_image = draw_matches(img1, kp1, img2, kp2, good_matches)
+
+    save_image(good_matches_image, results_folder / "03_good_matches.jpg")
+
+    H_gt = load_ground_truth_homography(ground_truth_path)
+
+    repeatability, repeatability_projected = compute_repeatability(
+        kp1, kp2, H_gt, img2.shape, gt_threshold
+    )
+
+    print("\n--- REPEATABILITY ---")
+    print("Repeatability:", round(repeatability * 100, 2), "%")
+
+    evaluation_matches = make_matches_one_to_one(good_matches)
+
+    gt_results = evaluate_matches_ground_truth(
+        kp1,
+        kp2,
+        evaluation_matches,
+        H_gt,
+        img2.shape,
+        gt_threshold
+    )
+
+    print("\n--- GROUND TRUTH EVALUATION ---")
+
+    print("Putative matches (one-to-one):", gt_results["putative_matches"])
+    print("Correct matches:", gt_results["correct_matches"])
+    print("Precision:", round(gt_results["precision"] * 100, 2), "%")
+    print("Recall:", round(gt_results["recall"] * 100, 2), "%")
+
+    correct_matches_image = draw_matches(
+        img1, kp1, img2, kp2,
+        evaluation_matches,
+        gt_results["correct_mask"]
+    )
+
+    save_image(correct_matches_image, results_folder / "07_ground_truth_correct.jpg")
+
+    incorrect_mask = 1 - gt_results["correct_mask"]
+
+    incorrect_matches_image = draw_matches(
+        img1, kp1, img2, kp2,
+        evaluation_matches,
+        incorrect_mask
+    )
+
+    save_image(incorrect_matches_image, results_folder / "08_ground_truth_incorrect.jpg")
+
+    H, mask = estimate_homography(
+        kp1,
+        kp2,
+        good_matches,
+        ransac_threshold
+    )
+
+    average_reprojection_error = calculate_reprojection_error(
+        kp1, kp2, good_matches, H, mask
+    )
+
+    num_inliers = int(mask.sum())
+    num_matches = len(good_matches)
+    num_outliers = num_matches - num_inliers
+    inlier_ratio = num_inliers / num_matches
+
+    print("\n--- RANSAC ---")
+
+    print("Good matches:", num_matches)
+    print("Inliers:", num_inliers)
+    print("Outliers:", num_outliers)
+    print("Inlier ratio:", round(inlier_ratio * 100, 2), "%")
+
+    print(
+        "Average reprojection error:",
+        round(average_reprojection_error, 4),
+        "pixels"
+    )
+
+    inliers_image = draw_matches(img1, kp1, img2, kp2, good_matches, mask)
+
+    save_image(inliers_image, results_folder / "04_ransac_inliers.jpg")
+
+    warped_img1 = warp_to_reference(img1, img2, H)
+
+    save_image(warped_img1, results_folder / "05_warped_img1.jpg")
+
+    panorama = create_panorama(img1, img2, H)
+
+    save_image(panorama, results_folder / "06_panorama.jpg")
+
+    print("\n--- PANORAMA ---")
+    print("Panorama guardado em:", results_folder / "06_panorama.jpg")
+
+    metrics_path = results_folder / "metrics.txt"
+
+    with open(metrics_path, "w", encoding="utf-8") as file:
+
+        file.write(f"Metodo: {label}\n")
+
+        file.write(
+            "Nota: deteção e matching são um único passo conjunto "
+            "(LightGlue), não divididos como nos outros métodos. "
+            "keypoints_img1/img2 contam só os pontos emparelhados "
+            "devolvidos pelo LightGlue (acima do threshold), não a "
+            "totalidade de pontos SuperPoint detetados -- essa "
+            "contagem está na linha 'superpoint' (SuperPoint + BF) "
+            "da mesma tabela.\n"
+        )
+
+        file.write(f"Keypoints/matches imagem 1: {len(kp1)}\n")
+        file.write(f"Keypoints/matches imagem 2: {len(kp2)}\n")
+        file.write(f"Good matches: {num_matches}\n")
+        file.write(f"Inliers: {num_inliers}\n")
+        file.write(f"Outliers: {num_outliers}\n")
+        file.write(f"Inlier ratio: {inlier_ratio * 100:.2f}%\n")
+        file.write(
+            f"Average reprojection error: "
+            f"{average_reprojection_error:.4f} pixels\n"
+        )
+        file.write(
+            f"Deteção+matching time (conjunto): "
+            f"{detection_and_matching_time * 1000:.2f} ms\n"
+        )
+        file.write(f"Descriptor dimension: {descriptor_dimension}\n")
+        file.write(f"Descriptor memory: {descriptor_memory:.2f} KB\n")
+        file.write(f"LightGlue match threshold: {match_threshold}\n")
+        file.write(f"RANSAC threshold: {ransac_threshold}\n")
+        file.write("Matching distance: n/a (matcher aprendido, LightGlue)\n")
+
+        file.write("\n--- Ground Truth Evaluation ---\n")
+        file.write(f"Ground truth threshold: {gt_threshold} pixels\n")
+        file.write(f"Repeatability: {repeatability * 100:.2f}%\n")
+        file.write(f"Repeatability projected points: {repeatability_projected}\n")
+        file.write(f"Putative matches one-to-one: {gt_results['putative_matches']}\n")
+        file.write(f"Correct matches: {gt_results['correct_matches']}\n")
+        file.write(f"Possible correspondences: {gt_results['possible_correspondences']}\n")
+        file.write(f"PMR: {gt_results['pmr'] * 100:.2f}%\n")
+        file.write(f"Precision: {gt_results['precision'] * 100:.2f}%\n")
+        file.write(f"Matching Score: {gt_results['matching_score'] * 100:.2f}%\n")
+        file.write(f"Recall: {gt_results['recall'] * 100:.2f}%\n")
+
+    print("Métricas guardadas em:", metrics_path)
+
+    if show:
+
+        show_image(f"1 - {label} Keypoints imagem 1", keypoints_img1)
+        show_image(f"2 - {label} Good Matches", good_matches_image)
+        show_image(f"3 - {label} RANSAC Inliers", inliers_image)
+        show_image(f"4 - {label} Warp", warped_img1)
+        show_image(f"5 - {label} Panorama", panorama)
+
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+    return {
+        "name": name,
+        "keypoints_img1": len(kp1),
+        "keypoints_img2": len(kp2),
+        "good_matches": num_matches,
+        "inliers": num_inliers,
+        "outliers": num_outliers,
+        "inlier_ratio": inlier_ratio,
+        "average_reprojection_error": average_reprojection_error,
+        "feature_time_ms": 0.0,
+        "matching_time_ms": detection_and_matching_time * 1000,
+        "descriptor_dimension": descriptor_dimension,
+        "descriptor_memory_kb": descriptor_memory,
+        "repeatability": repeatability,
+        "repeatability_projected_points": repeatability_projected,
+        **gt_results,
+    }
