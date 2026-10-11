@@ -7,6 +7,7 @@
 import cv2
 import numpy as np
 import time
+import csv
 from pathlib import Path
 
 
@@ -1355,3 +1356,71 @@ def run_experiment(
         "descriptor_memory_kb": descriptor_memory,
         **gt_results,
     }
+
+
+# ============================================================
+# 17. TABELA-RESUMO ENTRE MÉTODOS (comparison.csv)
+# ============================================================
+
+COMPARISON_FIELDS = [
+    "name",
+    "keypoints_img1",
+    "keypoints_img2",
+    "descriptor_dimension",
+    "descriptor_memory_kb",
+    "feature_time_ms",
+    "matching_time_ms",
+    "good_matches",
+    "inliers",
+    "outliers",
+    "inlier_ratio",
+    "average_reprojection_error",
+    "putative_matches",
+    "correct_matches",
+    "pmr",
+    "precision",
+    "matching_score",
+    "recall",
+]
+
+
+def summarize_results(
+    results_by_method,
+    csv_path
+):
+
+    csv_path = Path(csv_path)
+
+    csv_path.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as file:
+
+        writer = csv.DictWriter(
+            file,
+            fieldnames=COMPARISON_FIELDS
+        )
+
+        writer.writeheader()
+
+        for name, result in results_by_method.items():
+
+            if result is None:
+                continue
+
+            row = {}
+
+            for field in COMPARISON_FIELDS:
+
+                value = result.get(field, "")
+
+                if isinstance(value, float):
+                    value = round(value, 4)
+
+                row[field] = value
+
+            writer.writerow(row)
+
+    print("\nTabela-resumo guardada em:", csv_path)

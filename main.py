@@ -2,6 +2,7 @@ from pathlib import Path
 
 from pipeline import (
     run_experiment,
+    summarize_results,
     detect_sift,
     match_sift,
     detect_orb,
@@ -58,18 +59,25 @@ EXPERIMENTS = {
 
 def main():
 
+    results_by_method = {}
+
     for name, overrides in EXPERIMENTS.items():
 
         config = {**DEFAULT_CONFIG, **overrides}
 
         print(f"\n===== {name.upper()} =====")
 
-        run_experiment(
+        results_by_method[name] = run_experiment(
             name=name,
             results_folder=RESULTS_DIR / name,
             show=False,
             **config,
         )
+
+    summarize_results(
+        results_by_method,
+        RESULTS_DIR / "comparison.csv"
+    )
 
 
 if __name__ == "__main__":
