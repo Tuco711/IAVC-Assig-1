@@ -5,6 +5,9 @@ from pipeline import (
     summarize_results,
     run_fast_threshold_sweep,
     run_superpoint_lightglue_experiment,
+    stitch_sequence,
+    load_image,
+    save_image,
     detect_sift,
     match_sift,
     detect_orb,
@@ -26,6 +29,7 @@ from pipeline import (
 PROJECT_DIR = Path(__file__).resolve().parent
 GRAF_DIR = PROJECT_DIR / "data" / "graf"
 HPATCHES_DIR = PROJECT_DIR / "data" / "hpatches"
+PANORAMA_DIR = PROJECT_DIR / "data" / "Panorama"
 RESULTS_DIR = PROJECT_DIR / "results"
 
 COMMON_PARAMS = dict(
@@ -120,6 +124,63 @@ EXPERIMENTS = {
 }
 
 
+# ============================================================
+# STITCHING MULTI-IMAGEM — tripleto keble_a/b/c.jpg (secção 3.3)
+#
+# Pelo menos uma configuração clássica (SIFT) e uma learned
+# (SuperPoint), com pelo menos duas estratégias de imagem de
+# referência (central "b" vs. primeira "a").
+# ============================================================
+
+PANORAMA_CONFIGS = {
+    "sift": dict(detect_fn=detect_sift, match_fn=match_sift),
+    "superpoint": dict(detect_fn=detect_superpoint, match_fn=match_sift),
+}
+
+PANORAMA_REFERENCES = {
+    "b": 1,
+    "a": 0,
+}
+
+
+def run_panorama_stitching():
+
+    images = [
+        load_image(PANORAMA_DIR / "keble_a.jpg"),
+        load_image(PANORAMA_DIR / "keble_b.jpg"),
+        load_image(PANORAMA_DIR / "keble_c.jpg"),
+    ]
+
+    for method_name, method_cfg in PANORAMA_CONFIGS.items():
+
+        for ref_name, ref_index in PANORAMA_REFERENCES.items():
+
+            print(
+                f"\n===== PANORAMA_KEBLE / {method_name.upper()} "
+                f"/ ref={ref_name.upper()} ====="
+            )
+
+            panorama = stitch_sequence(
+                images,
+                detect_fn=method_cfg["detect_fn"],
+                match_fn=method_cfg["match_fn"],
+                reference_index=ref_index,
+                ratio=COMMON_PARAMS["ratio"],
+                ransac_threshold=COMMON_PARAMS["ransac_threshold"],
+            )
+
+            out_path = (
+                RESULTS_DIR
+                / "panorama_keble"
+                / f"{method_name}_ref_{ref_name}"
+                / "panorama.jpg"
+            )
+
+            save_image(panorama, out_path)
+
+            print("Panorama guardado em:", out_path)
+
+
 def main():
 
     for scene_name, scene_config in SCENES.items():
@@ -165,6 +226,8 @@ def main():
         csv_path=RESULTS_DIR / "fast_threshold_sweep.csv",
         gt_threshold=COMMON_PARAMS["gt_threshold"],
     )
+
+    run_panorama_stitching()
 
 
 if __name__ == "__main__":

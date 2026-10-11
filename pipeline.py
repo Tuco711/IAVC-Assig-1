@@ -2161,3 +2161,160 @@ def run_superpoint_lightglue_experiment(
         "repeatability_projected_points": repeatability_projected,
         **gt_results,
     }
+
+
+# ============================================================
+# 21. STITCHING MULTI-IMAGEM (N >= 2)
+#
+# Generaliza create_panorama (que só serve para 2 imagens) a
+# uma sequência de N imagens. Estima homografias entre pares
+# adjacentes, compõe-as até à imagem de referência, calcula o
+# canvas-união a partir dos cantos de todas as imagens, e funde
+# por média acumulada (cada pixel do canvas é a média das
+# imagens que o cobrem).
+# ============================================================
+
+def stitch_sequence(
+    images,
+    detect_fn,
+    match_fn,
+    reference_index=None,
+    ratio=0.8,
+    ransac_threshold=3.0,
+):
+
+    n = len(images)
+
+    if n < 2:
+        raise ValueError(
+            "São necessárias pelo menos 2 imagens para stitching."
+        )
+
+    if reference_index is None:
+        reference_index = n // 2
+
+    grays = [to_gray(img) for img in images]
+
+    keypoints_list = []
+    descriptors_list = []
+
+    for gray in grays:
+
+        kp, des = detect_fn(gray)
+
+        keypoints_list.append(kp)
+        descriptors_list.append(des)
+
+    # --------------------------------------------------------
+    # Homografias entre pares adjacentes:
+    # H_adjacent[i] mapeia imagem i -> imagem i+1
+    # --------------------------------------------------------
+
+    H_adjacent = []
+
+    for i in range(n - 1):
+
+        matches, good_matches = match_fn(
+            descriptors_list[i],
+            descriptors_list[i + 1],
+            ratio
+        )
+
+        H, mask = estimate_homography(
+            keypoints_list[i],
+            keypoints_list[i + 1],
+            good_matches,
+            ransac_threshold
+        )
+
+        H_adjacent.append(H)
+
+    # --------------------------------------------------------
+    # Compor homografias até à imagem de referência
+    # --------------------------------------------------------
+
+    H_to_ref = [None] * n
+    H_to_ref[reference_index] = np.eye(3)
+
+    for i in range(reference_index + 1, n):
+
+        H_to_ref[i] = H_to_ref[i - 1] @ np.linalg.inv(H_adjacent[i - 1])
+
+    for i in range(reference_index - 1, -1, -1):
+
+        H_to_ref[i] = H_to_ref[i + 1] @ H_adjacent[i]
+
+    # --------------------------------------------------------
+    # Canvas-união a partir dos cantos de todas as imagens
+    # --------------------------------------------------------
+
+    all_corners = []
+
+    for i, img in enumerate(images):
+
+        h, w = img.shape[:2]
+
+        corners = np.float32(
+            [[0, 0], [w, 0], [w, h], [0, h]]
+        ).reshape(-1, 1, 2)
+
+        warped_corners = cv2.perspectiveTransform(corners, H_to_ref[i])
+
+        all_corners.append(warped_corners)
+
+    all_corners = np.concatenate(all_corners, axis=0)
+
+    xmin, ymin = np.floor(
+        all_corners.min(axis=0).ravel()
+    ).astype(int)
+
+    xmax, ymax = np.ceil(
+        all_corners.max(axis=0).ravel()
+    ).astype(int)
+
+    tx, ty = -xmin, -ymin
+
+    translation = np.array(
+        [[1, 0, tx], [0, 1, ty], [0, 0, 1]],
+        dtype=np.float64
+    )
+
+    canvas_width = xmax - xmin
+    canvas_height = ymax - ymin
+
+    # --------------------------------------------------------
+    # Warp + blending (média acumulada por pixel)
+    # --------------------------------------------------------
+
+    accumulator = np.zeros((canvas_height, canvas_width, 3), dtype=np.float32)
+    weight = np.zeros((canvas_height, canvas_width), dtype=np.float32)
+
+    for i, img in enumerate(images):
+
+        H_canvas = translation @ H_to_ref[i]
+
+        warped = cv2.warpPerspective(
+            img, H_canvas, (canvas_width, canvas_height)
+        )
+
+        h, w = img.shape[:2]
+
+        mask = cv2.warpPerspective(
+            np.ones((h, w), dtype=np.uint8),
+            H_canvas,
+            (canvas_width, canvas_height),
+            flags=cv2.INTER_NEAREST
+        ).astype(bool)
+
+        accumulator[mask] += warped[mask].astype(np.float32)
+        weight[mask] += 1.0
+
+    covered = weight > 0
+
+    panorama = np.zeros_like(accumulator, dtype=np.uint8)
+
+    panorama[covered] = (
+        accumulator[covered] / weight[covered, None]
+    ).astype(np.uint8)
+
+    return panorama

@@ -99,7 +99,25 @@ results/<scene>/<método>/
   metrics.txt
 results/<scene>/comparison.csv   # tabela-resumo com uma linha por método
 results/fast_threshold_sweep.csv # varrimento threshold x NMS do FAST vs. SIFT
+results/panorama_keble/<método>_ref_<ref>/panorama.jpg  # stitching 3 imagens
 ```
+
+### Stitching multi-imagem
+
+`stitch_sequence()` em `pipeline.py` generaliza `create_panorama` (só 2
+imagens) a uma sequência de N imagens: estima homografias entre pares
+adjacentes, compõe-as até à imagem de referência (multiplicação de
+matrizes), calcula o canvas-união a partir dos cantos de todas as imagens,
+e funde por média acumulada por pixel.
+
+Corrido sobre `data/Panorama/keble_a/b/c.jpg` (sem ground truth — avaliação
+qualitativa) com duas configurações (SIFT, SuperPoint) × duas estratégias
+de referência (`b` = central, `a` = primeira). Resultado: com referência
+central (`b`), a distorção fica equilibrada dos dois lados; com referência
+lateral (`a`), o erro geométrico acumula-se ao longo da cadeia de
+homografias e a imagem mais distante (`c`) sai visivelmente mais
+distorcida — ilustra na prática o aviso da secção 3.3 do enunciado sobre
+escolha de imagem de referência.
 
 ## Parâmetros usados
 
@@ -154,5 +172,5 @@ invariante a rotação (limitação conhecida do BRIEF "vanilla", ao contrário
 do rBRIEF usado no ORB). A estratégia gaussiana supera consistentemente a
 uniforme em qualidade de matching, coerente com o paper original do BRIEF.
 
-Em falta face ao enunciado (ver plano de implementação): stitching de 3+
-imagens e o relatório final.
+Em falta face ao enunciado (ver plano de implementação): o relatório
+final.
