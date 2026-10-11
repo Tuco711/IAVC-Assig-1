@@ -10,9 +10,10 @@ enunciado (PMR, Precision, Matching Score, Recall).
 - Gestor de pacotes: [uv](https://docs.astral.sh/uv/). Dependências e
   versões exatas em `pyproject.toml` / `uv.lock` (equivalente a
   `requirements.txt`).
-- Dependências principais: `numpy==2.5.3`, `opencv-python==4.11.0.86`.
-- Não é necessário GPU para os métodos atualmente implementados (SIFT, ORB,
-  KAZE).
+- Dependências principais: `numpy==2.5.3`, `opencv-contrib-python==4.11.0.86`
+  (build *contrib*, necessário para o FREAK via `cv2.xfeatures2d`; é um
+  superset do `opencv-python`, não instalar os dois em simultâneo).
+- Não é necessário GPU para os métodos atualmente implementados.
 
 Criar o ambiente:
 
@@ -20,7 +21,7 @@ Criar o ambiente:
 uv sync
 ```
 
-(Alternativa sem `uv`: `pip install numpy==2.5.3 opencv-python==4.11.0.86`.)
+(Alternativa sem `uv`: `pip install numpy==2.5.3 opencv-contrib-python==4.11.0.86`.)
 
 ## Correr as experiências
 
@@ -86,8 +87,20 @@ Matching Score e Recall são deterministicos para os mesmos parâmetros.
 | SIFT | SIFT | SIFT (float, 128-d) | L2 |
 | ORB  | ORB  | ORB (binário, 32 bytes) | Hamming |
 | KAZE | KAZE | KAZE (float, 64-d) | L2 |
+| BRISK | BRISK | BRISK (binário, 64 bytes) | Hamming |
+| FAST + BRIEF (uniforme) | FAST | BRIEF próprio, pares uniformes no patch | Hamming |
+| FAST + BRIEF (gaussiana) | FAST | BRIEF próprio, pares ~Gaussiana isotrópica | Hamming |
+| FAST + FREAK | FAST | FREAK (`cv2.xfeatures2d`, binário, 64 bytes) | Hamming |
 
-Em falta face ao enunciado (ver plano de implementação): FAST, BRIEF
-(implementação própria), BRISK, FREAK, SuperPoint + LightGlue, segunda
-categoria de transformação (iluminação), stitching de 3+ imagens e o
-relatório final.
+A implementação própria do BRIEF está em `compute_brief()` em `pipeline.py`:
+compara intensidades (numa versão desfocada da imagem) em pares de pontos
+amostrados num patch de 31×31 à volta de cada keypoint, com padrão de
+amostragem fixo (seed=42) reutilizado em todos os keypoints/imagens — tal
+como no BRIEF original. Não tem informação de orientação, por isso não é
+invariante a rotação (limitação conhecida do BRIEF "vanilla", ao contrário
+do rBRIEF usado no ORB). A estratégia gaussiana supera consistentemente a
+uniforme em qualidade de matching, coerente com o paper original do BRIEF.
+
+Em falta face ao enunciado (ver plano de implementação): SuperPoint +
+LightGlue, repeatability, segunda categoria de transformação (iluminação),
+stitching de 3+ imagens e o relatório final.

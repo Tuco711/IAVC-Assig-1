@@ -96,6 +96,196 @@ def detect_kaze(image_gray):
     return keypoints, descriptors
 
 
+# ------------------------------------------------------------
+# BRISK (detetor + descritor próprios)
+# ------------------------------------------------------------
+
+def detect_brisk(image_gray):
+
+    brisk = cv2.BRISK_create()
+
+    keypoints, descriptors = brisk.detectAndCompute(
+        image_gray,
+        None
+    )
+
+    return keypoints, descriptors
+
+
+# ------------------------------------------------------------
+# FAST + descritor externo (BRISK/FREAK sabem calcular
+# descritores para keypoints dados por outro detetor)
+# ------------------------------------------------------------
+
+def _detect_then_describe(
+    image_gray,
+    detector,
+    descriptor_extractor
+):
+
+    keypoints = detector.detect(
+        image_gray,
+        None
+    )
+
+    keypoints, descriptors = descriptor_extractor.compute(
+        image_gray,
+        keypoints
+    )
+
+    return keypoints, descriptors
+
+
+def detect_fast_freak(image_gray):
+
+    fast = cv2.FastFeatureDetector_create()
+    freak = cv2.xfeatures2d.FREAK_create()
+
+    return _detect_then_describe(
+        image_gray,
+        fast,
+        freak
+    )
+
+
+# ------------------------------------------------------------
+# BRIEF (implementação própria, não a do opencv-contrib)
+#
+# Para cada keypoint, compara intensidades (numa versão
+# ligeiramente desfocada da imagem, como no paper original)
+# em pares de pontos amostrados dentro de um patch à volta
+# do keypoint. O padrão de pares é fixo (seed fixa) e reusado
+# em todos os keypoints/imagens, tal como no BRIEF original.
+#
+# Duas estratégias de amostragem (parâmetro `pattern`):
+# - "uniform":  pares uniformemente distribuídos no patch.
+# - "gaussian": pares amostrados de uma Gaussiana isotrópica
+#               centrada no keypoint (aprox. à estratégia
+#               "G I" do paper original).
+#
+# Nota: sem informação de orientação (ao contrário do rBRIEF
+# usado no ORB) -> não é invariante a rotação. Limitação
+# conhecida e esperada do BRIEF "vanilla".
+# ------------------------------------------------------------
+
+def compute_brief(
+    image_gray,
+    keypoints,
+    pattern="uniform",
+    patch_size=31,
+    n_bits=256,
+    seed=42
+):
+
+    if len(keypoints) == 0:
+        return keypoints, np.zeros((0, n_bits // 8), dtype=np.uint8)
+
+    blurred = cv2.GaussianBlur(
+        image_gray,
+        (5, 5),
+        2.0
+    )
+
+    height, width = blurred.shape
+
+    half = patch_size // 2
+
+    rng = np.random.default_rng(seed)
+
+    if pattern == "uniform":
+
+        offsets = rng.integers(
+            -half,
+            half + 1,
+            size=(n_bits, 2, 2)
+        )
+
+    elif pattern == "gaussian":
+
+        sigma = patch_size / 5.0
+
+        offsets = rng.normal(
+            0,
+            sigma,
+            size=(n_bits, 2, 2)
+        )
+
+        offsets = np.clip(
+            np.round(offsets),
+            -half,
+            half
+        ).astype(int)
+
+    else:
+
+        raise ValueError(
+            f"Padrão de amostragem BRIEF desconhecido: {pattern}"
+        )
+
+    # Descartar keypoints demasiado perto da margem para
+    # caberem o patch completo
+    valid_keypoints = [
+        kp for kp in keypoints
+        if half <= kp.pt[0] <= width - 1 - half
+        and half <= kp.pt[1] <= height - 1 - half
+    ]
+
+    if len(valid_keypoints) == 0:
+        return valid_keypoints, np.zeros((0, n_bits // 8), dtype=np.uint8)
+
+    centers = np.array(
+        [kp.pt for kp in valid_keypoints]
+    )
+
+    pts1 = np.round(
+        centers[:, None, :] + offsets[None, :, 0, :]
+    ).astype(int)
+
+    pts2 = np.round(
+        centers[:, None, :] + offsets[None, :, 1, :]
+    ).astype(int)
+
+    pts1[..., 0] = np.clip(pts1[..., 0], 0, width - 1)
+    pts1[..., 1] = np.clip(pts1[..., 1], 0, height - 1)
+    pts2[..., 0] = np.clip(pts2[..., 0], 0, width - 1)
+    pts2[..., 1] = np.clip(pts2[..., 1], 0, height - 1)
+
+    intensities1 = blurred[pts1[..., 1], pts1[..., 0]]
+    intensities2 = blurred[pts2[..., 1], pts2[..., 0]]
+
+    bits = (intensities1 < intensities2).astype(np.uint8)
+
+    descriptors = np.packbits(bits, axis=1)
+
+    return valid_keypoints, descriptors
+
+
+def detect_fast_brief_uniform(image_gray):
+
+    fast = cv2.FastFeatureDetector_create()
+
+    keypoints = fast.detect(image_gray, None)
+
+    return compute_brief(
+        image_gray,
+        keypoints,
+        pattern="uniform"
+    )
+
+
+def detect_fast_brief_gaussian(image_gray):
+
+    fast = cv2.FastFeatureDetector_create()
+
+    keypoints = fast.detect(image_gray, None)
+
+    return compute_brief(
+        image_gray,
+        keypoints,
+        pattern="gaussian"
+    )
+
+
 # ============================================================
 # 4. MATCHING
 # ============================================================

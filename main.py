@@ -9,6 +9,10 @@ from pipeline import (
     match_orb,
     detect_kaze,
     match_kaze,
+    detect_brisk,
+    detect_fast_freak,
+    detect_fast_brief_uniform,
+    detect_fast_brief_gaussian,
 )
 
 
@@ -53,6 +57,26 @@ EXPERIMENTS = {
         detect_fn=detect_kaze,
         match_fn=match_kaze,
         distance_label="L2",
+    ),
+    "brisk": dict(
+        detect_fn=detect_brisk,
+        match_fn=match_orb,
+        distance_label="Hamming",
+    ),
+    "fast_brief_uniform": dict(
+        detect_fn=detect_fast_brief_uniform,
+        match_fn=match_orb,
+        distance_label="Hamming",
+    ),
+    "fast_brief_gaussian": dict(
+        detect_fn=detect_fast_brief_gaussian,
+        match_fn=match_orb,
+        distance_label="Hamming",
+    ),
+    "fast_freak": dict(
+        detect_fn=detect_fast_freak,
+        match_fn=match_orb,
+        distance_label="Hamming",
     ),
 }
 
