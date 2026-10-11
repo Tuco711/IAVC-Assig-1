@@ -163,6 +163,25 @@ separada. Seguindo a secção 4 do enunciado, SuperPoint e LightGlue são
 tratados como configurações conceptualmente distintas (detetor/descritor
 vs. matcher), nunca como um único "detetor".
 
+**Importante**: pela mesma razão, `repeatability`, `pmr`, `precision`,
+`matching_score` e `recall` da linha `superpoint_lightglue` são também
+calculados sobre esse conjunto já emparelhado, não sobre a totalidade de
+keypoints detetados — acabam por medir sobretudo a qualidade do matching
+em si (um ponto já confirmado como correspondência projeta-se quase
+sempre perto do seu par), não uma propriedade independente da deteção.
+Por isso os valores desta linha (tipicamente muito altos e próximos uns
+dos outros, com PMR ≈100%) **não são diretamente comparáveis**, coluna a
+coluna, aos das restantes 8 configurações. A repeatability/qualidade de
+deteção do SuperPoint, de forma comparável às outras, está na linha
+`superpoint` (SuperPoint + BF).
+
+`main.py` chama `warmup_learned_models()` antes do grid de experiências,
+para forçar o carregamento dos pesos do SuperPoint/LightGlue fora de
+qualquer cronometragem — sem isto, o primeiro método/scene a usar cada
+modelo fica com o tempo de deteção inflacionado em vários segundos pelo
+carregamento (não repetível) dos pesos, distorcendo a comparação de
+tempos entre métodos.
+
 A implementação própria do BRIEF está em `compute_brief()` em `pipeline.py`:
 compara intensidades (numa versão desfocada da imagem) em pares de pontos
 amostrados num patch de 31×31 à volta de cada keypoint, com padrão de

@@ -1825,6 +1825,19 @@ def _get_superpoint():
     return _SUPERPOINT_PROCESSOR, _SUPERPOINT_MODEL
 
 
+def warmup_learned_models():
+    """
+    Força o carregamento dos pesos pré-treinados do SuperPoint e do
+    LightGlue antes de qualquer medição de tempo. Sem isto, o primeiro
+    método/scene a usar cada modelo fica com o tempo de deteção
+    inflacionado pelo custo (único, não repetível) de carregar os
+    pesos — contaminando a comparação de tempos entre métodos/scenes.
+    """
+
+    _get_superpoint()
+    _get_lightglue()
+
+
 def detect_superpoint(image_gray):
 
     import torch

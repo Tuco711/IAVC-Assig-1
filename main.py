@@ -6,6 +6,7 @@ from pipeline import (
     run_fast_threshold_sweep,
     run_superpoint_lightglue_experiment,
     stitch_sequence,
+    warmup_learned_models,
     load_image,
     save_image,
     detect_sift,
@@ -182,6 +183,10 @@ def run_panorama_stitching():
 
 
 def main():
+
+    # Carrega os pesos do SuperPoint/LightGlue antes de cronometrar
+    # qualquer método, para não contaminar o tempo da primeira scene.
+    warmup_learned_models()
 
     for scene_name, scene_config in SCENES.items():
 
