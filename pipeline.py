@@ -6,6 +6,7 @@
 
 import cv2
 import numpy as np
+import time
 from pathlib import Path
 
 
@@ -1027,4 +1028,330 @@ def evaluate_matches_ground_truth(
 
         "errors":
             errors
+    }
+
+
+# ============================================================
+# 16. CORRER UMA EXPERIÊNCIA COMPLETA (deteção -> matching ->
+#     RANSAC -> warp -> panorama -> métricas), parametrizada
+#     por detetor/descritor/matcher.
+# ============================================================
+
+def run_experiment(
+    name,
+    detect_fn,
+    match_fn,
+    distance_label,
+    img1_path,
+    img2_path,
+    ground_truth_path,
+    results_folder,
+    ratio=0.8,
+    ransac_threshold=3.0,
+    gt_threshold=3.0,
+    show=False,
+):
+
+    results_folder = Path(results_folder)
+
+    results_folder.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    label = name.upper()
+
+
+    # --------------------------------------------------------
+    # 1. CARREGAR IMAGENS
+    # --------------------------------------------------------
+
+    img1 = load_image(img1_path)
+    img2 = load_image(img2_path)
+
+    print("Imagens carregadas com sucesso!")
+
+
+    # --------------------------------------------------------
+    # 2. CONVERTER PARA GRAYSCALE
+    # --------------------------------------------------------
+
+    gray1 = to_gray(img1)
+    gray2 = to_gray(img2)
+
+
+    # --------------------------------------------------------
+    # 3. DETEÇÃO + DESCRIÇÃO
+    # --------------------------------------------------------
+
+    start_time = time.perf_counter()
+
+    kp1, des1 = detect_fn(gray1)
+    kp2, des2 = detect_fn(gray2)
+
+    feature_time = time.perf_counter() - start_time
+
+
+    if des1 is None or des2 is None:
+        print(f"ERRO: {label} não conseguiu calcular descritores.")
+        return None
+
+
+    descriptor_dimension = des1.shape[1]
+
+    descriptor_memory = (
+        des1.nbytes + des2.nbytes
+    ) / 1024
+
+
+    print(f"\n--- {label} ---")
+
+    print("Keypoints imagem 1:", len(kp1))
+    print("Keypoints imagem 2:", len(kp2))
+
+    print(
+        "Tempo deteção + descrição:",
+        round(feature_time * 1000, 2),
+        "ms"
+    )
+
+    print("Descriptor dimension:", descriptor_dimension)
+
+    print(
+        "Descriptor memory:",
+        round(descriptor_memory, 2),
+        "KB"
+    )
+
+
+    # --------------------------------------------------------
+    # 4. GUARDAR KEYPOINTS
+    # --------------------------------------------------------
+
+    keypoints_img1 = draw_keypoints(img1, kp1)
+    keypoints_img2 = draw_keypoints(img2, kp2)
+
+    save_image(keypoints_img1, results_folder / "01_keypoints_img1.jpg")
+    save_image(keypoints_img2, results_folder / "02_keypoints_img2.jpg")
+
+
+    # --------------------------------------------------------
+    # 5. MATCHING
+    # --------------------------------------------------------
+
+    start_time = time.perf_counter()
+
+    matches, good_matches = match_fn(des1, des2, ratio)
+
+    matching_time = time.perf_counter() - start_time
+
+
+    print("\n--- MATCHING ---")
+
+    print("Matches iniciais:", len(matches))
+    print("Good matches:", len(good_matches))
+
+    print(
+        "Tempo matching:",
+        round(matching_time * 1000, 2),
+        "ms"
+    )
+
+
+    if len(good_matches) < 4:
+        print(
+            "ERRO: não existem matches suficientes "
+            "para calcular a homografia."
+        )
+        return None
+
+
+    good_matches_image = draw_matches(img1, kp1, img2, kp2, good_matches)
+
+    save_image(good_matches_image, results_folder / "03_good_matches.jpg")
+
+
+    # --------------------------------------------------------
+    # 6. AVALIAÇÃO COM GROUND TRUTH
+    # --------------------------------------------------------
+
+    H_gt = load_ground_truth_homography(ground_truth_path)
+
+    evaluation_matches = make_matches_one_to_one(good_matches)
+
+    gt_results = evaluate_matches_ground_truth(
+        kp1,
+        kp2,
+        evaluation_matches,
+        H_gt,
+        img2.shape,
+        gt_threshold
+    )
+
+
+    print("\n--- GROUND TRUTH EVALUATION ---")
+
+    print("Putative matches (one-to-one):", gt_results["putative_matches"])
+    print("Correct matches:", gt_results["correct_matches"])
+    print("PMR:", round(gt_results["pmr"] * 100, 2), "%")
+    print("Precision:", round(gt_results["precision"] * 100, 2), "%")
+    print("Matching Score:", round(gt_results["matching_score"] * 100, 2), "%")
+    print("Recall:", round(gt_results["recall"] * 100, 2), "%")
+
+
+    correct_matches_image = draw_matches(
+        img1, kp1, img2, kp2,
+        evaluation_matches,
+        gt_results["correct_mask"]
+    )
+
+    save_image(correct_matches_image, results_folder / "07_ground_truth_correct.jpg")
+
+
+    incorrect_mask = 1 - gt_results["correct_mask"]
+
+    incorrect_matches_image = draw_matches(
+        img1, kp1, img2, kp2,
+        evaluation_matches,
+        incorrect_mask
+    )
+
+    save_image(incorrect_matches_image, results_folder / "08_ground_truth_incorrect.jpg")
+
+
+    # --------------------------------------------------------
+    # 7. HOMOGRAFIA + RANSAC
+    # --------------------------------------------------------
+
+    H, mask = estimate_homography(
+        kp1,
+        kp2,
+        good_matches,
+        ransac_threshold
+    )
+
+    average_reprojection_error = calculate_reprojection_error(
+        kp1, kp2, good_matches, H, mask
+    )
+
+    num_inliers = int(mask.sum())
+    num_matches = len(good_matches)
+    num_outliers = num_matches - num_inliers
+    inlier_ratio = num_inliers / num_matches
+
+
+    print("\n--- RANSAC ---")
+
+    print("Good matches:", num_matches)
+    print("Inliers:", num_inliers)
+    print("Outliers:", num_outliers)
+    print("Inlier ratio:", round(inlier_ratio * 100, 2), "%")
+
+    print(
+        "Average reprojection error:",
+        round(average_reprojection_error, 4),
+        "pixels"
+    )
+
+    print("\nHomografia:")
+    print(H)
+
+
+    inliers_image = draw_matches(img1, kp1, img2, kp2, good_matches, mask)
+
+    save_image(inliers_image, results_folder / "04_ransac_inliers.jpg")
+
+
+    # --------------------------------------------------------
+    # 8. WARP
+    # --------------------------------------------------------
+
+    warped_img1 = warp_to_reference(img1, img2, H)
+
+    save_image(warped_img1, results_folder / "05_warped_img1.jpg")
+
+
+    # --------------------------------------------------------
+    # 9. PANORAMA
+    # --------------------------------------------------------
+
+    panorama = create_panorama(img1, img2, H)
+
+    save_image(panorama, results_folder / "06_panorama.jpg")
+
+    print("\n--- PANORAMA ---")
+    print("Panorama guardado em:", results_folder / "06_panorama.jpg")
+
+
+    # --------------------------------------------------------
+    # 10. GUARDAR MÉTRICAS
+    # --------------------------------------------------------
+
+    metrics_path = results_folder / "metrics.txt"
+
+    with open(metrics_path, "w", encoding="utf-8") as file:
+
+        file.write(f"Metodo: {label}\n")
+        file.write(f"Keypoints imagem 1: {len(kp1)}\n")
+        file.write(f"Keypoints imagem 2: {len(kp2)}\n")
+        file.write(f"Matches iniciais: {len(matches)}\n")
+        file.write(f"Good matches: {num_matches}\n")
+        file.write(f"Inliers: {num_inliers}\n")
+        file.write(f"Outliers: {num_outliers}\n")
+        file.write(f"Inlier ratio: {inlier_ratio * 100:.2f}%\n")
+        file.write(
+            f"Average reprojection error: "
+            f"{average_reprojection_error:.4f} pixels\n"
+        )
+        file.write(f"Feature extraction time: {feature_time * 1000:.2f} ms\n")
+        file.write(f"Matching time: {matching_time * 1000:.2f} ms\n")
+        file.write(f"Descriptor dimension: {descriptor_dimension}\n")
+        file.write(f"Descriptor memory: {descriptor_memory:.2f} KB\n")
+        file.write(f"Lowe ratio: {ratio}\n")
+        file.write(f"RANSAC threshold: {ransac_threshold}\n")
+        file.write(f"Matching distance: {distance_label}\n")
+
+        file.write("\n--- Ground Truth Evaluation ---\n")
+        file.write(f"Ground truth threshold: {gt_threshold} pixels\n")
+        file.write(f"Putative matches one-to-one: {gt_results['putative_matches']}\n")
+        file.write(f"Correct matches: {gt_results['correct_matches']}\n")
+        file.write(f"Possible correspondences: {gt_results['possible_correspondences']}\n")
+        file.write(f"PMR: {gt_results['pmr'] * 100:.2f}%\n")
+        file.write(f"Precision: {gt_results['precision'] * 100:.2f}%\n")
+        file.write(f"Matching Score: {gt_results['matching_score'] * 100:.2f}%\n")
+        file.write(f"Recall: {gt_results['recall'] * 100:.2f}%\n")
+
+    print("Métricas guardadas em:", metrics_path)
+
+
+    # --------------------------------------------------------
+    # 11. MOSTRAR RESULTADOS (opcional)
+    # --------------------------------------------------------
+
+    if show:
+
+        show_image(f"1 - {label} Keypoints imagem 1", keypoints_img1)
+        show_image(f"2 - {label} Good Matches", good_matches_image)
+        show_image(f"3 - {label} RANSAC Inliers", inliers_image)
+        show_image(f"4 - {label} Warp", warped_img1)
+        show_image(f"5 - {label} Panorama", panorama)
+
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+
+    return {
+        "name": name,
+        "keypoints_img1": len(kp1),
+        "keypoints_img2": len(kp2),
+        "good_matches": num_matches,
+        "inliers": num_inliers,
+        "outliers": num_outliers,
+        "inlier_ratio": inlier_ratio,
+        "average_reprojection_error": average_reprojection_error,
+        "feature_time_ms": feature_time * 1000,
+        "matching_time_ms": matching_time * 1000,
+        "descriptor_dimension": descriptor_dimension,
+        "descriptor_memory_kb": descriptor_memory,
+        **gt_results,
     }
